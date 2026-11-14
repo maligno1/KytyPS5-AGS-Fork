@@ -918,6 +918,19 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 				append("{}{:02x}", (i % 16 == 0) ? "\n " : " ", code[i]);
 			}
 			append("\n");
+			// A guest INT whose vector no host handler serves (Linux: an unavailable IDT
+			// entry) surfaces as a general-protection fault with no fault address. Games use
+			// these as their own assertion/debug breaks — the game stopped itself, it is not
+			// an emulator access violation (Astro Bot's "graphics command buffer exhausted"
+			// check traps with int 0x42 at the same pc every time: KytyPS5 issue #1993).
+			if (code[48] == 0xCD &&
+			    Common::Singleton<RuntimeLinker>::Instance()->FindProgramByAddr(
+			        info->exception_address) != nullptr) {
+				append("guest trap: the game executed int 0x{:02x} at pc, its own "
+				       "assertion/debug break (the game stopped itself; the host serves no "
+				       "handler for this vector, which surfaces as this fatal)\n",
+				       code[49]);
+			}
 		}
 		if (IsReadableRange(info->rsp, 32 * sizeof(uint64_t))) {
 			const auto* stack = reinterpret_cast<const uint64_t*>(info->rsp);
