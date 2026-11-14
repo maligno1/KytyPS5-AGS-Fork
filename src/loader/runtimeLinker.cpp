@@ -939,6 +939,32 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 				append("{} {:016x}", (i % 4 == 0) ? "\n " : "", stack[i]);
 			}
 			append("\n");
+			// Likely guest return addresses on the stack: a value inside a loaded program whose
+			// preceding 5 bytes are a call (e8 rel32) is probably a return address, and the code
+			// around it shows the caller when the faulting pc itself is corrupt (jumped-to
+			// garbage). Bounded, so a garbage stack cannot flood the report.
+			int dumped_return_addresses = 0;
+			for (int i = 0; i < 32 && dumped_return_addresses < 4; i++) {
+				const auto  value   = stack[i];
+				const auto* program =
+				    Common::Singleton<RuntimeLinker>::Instance()->FindProgramByAddr(value);
+				if (program == nullptr || !IsReadableRange(value - 48, 96)) {
+					continue;
+				}
+				const auto* code = reinterpret_cast<const uint8_t*>(value - 48);
+				if (code[43] != 0xE8) {
+					continue;
+				}
+				dumped_return_addresses++;
+				append("code around stack value {}=0x{:016x} in {}+0x{:x} (call at byte 43, return "
+				       "address at byte 48):",
+				       i, value, program->file_name.filename().string(),
+				       value - program->base_vaddr);
+				for (int j = 0; j < 96; j++) {
+					append("{}{:02x}", (j % 16 == 0) ? "\n " : " ", code[j]);
+				}
+				append("\n");
+			}
 		}
 		// A bad argument can originate in guest object data or in a saved-register restore.
 		// Preserve bounded readable object contents so a later report can distinguish them.
