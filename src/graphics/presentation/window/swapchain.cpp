@@ -969,7 +969,14 @@ Swapchain::Status Swapchain::AcquireNextImage(CommandScheduler& scheduler) {
 		case vk::Result::eErrorSurfaceLostKHR:
 			LOGF("vkAcquireNextImageKHR returned vk::Result::eErrorSurfaceLostKHR\n");
 			return Status::SurfaceLost;
-		default: EXIT("vkAcquireNextImageKHR failed: %s\n", vk::to_string(result).c_str());
+		default:
+			// The acquire call is often the first place an AMD device loss surfaces; dump the
+			// diagnostics before exiting (port of ChronoRPG 7887092f). The submit path already
+			// dumps via queueSubmission.cpp.
+			if (result == vk::Result::eErrorDeviceLost) {
+				DumpDeviceLossDiagnostics(m_window.graphic_ctx);
+			}
+			EXIT("vkAcquireNextImageKHR failed: %s\n", vk::to_string(result).c_str());
 	}
 	EXIT_IF(m_image_index >= m_images.size());
 	return Status::Success;
