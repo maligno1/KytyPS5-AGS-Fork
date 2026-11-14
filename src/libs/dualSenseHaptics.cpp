@@ -11,6 +11,8 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <map>
 #include <vector>
 
@@ -42,7 +44,16 @@ std::map<int, int> g_speaker_streams;
 
 // Where pad speaker and vibration audio goes, for the console diagnostics: printed when it
 // changes, per port kind, so a 2-second device recheck does not repeat it.
-enum class Route { Unknown, NoWiredPad, NoUsbDevice, Usb, UsbFailed, Bluetooth, BluetoothFailed };
+enum class Route {
+	Unknown,
+	NoWiredPad,
+	NoUsbDevice,
+	Usb,
+	UsbFailed,
+	Bluetooth,
+	BluetoothFailed,
+	Rumble
+};
 std::atomic<Route> g_reported_route[2] {Route::Unknown, Route::Unknown};
 
 void ReportRoute(const Stream* stream, Route route, const char* detail) {
@@ -62,12 +73,27 @@ void ReportRoute(const Stream* stream, Route route, const char* detail) {
 		case Route::UsbFailed: text = "USB audio device failed to open"; break;
 		case Route::Bluetooth: text = "Bluetooth HID audio"; break;
 		case Route::BluetoothFailed: text = "Bluetooth HID audio failed to open"; break;
+		case Route::Rumble:
+			text = "compatible rumble from PCM envelope (fine audio haptics disabled)";
+			break;
 		case Route::Unknown: break;
 	}
 	Libs::Audio::Diag::Print("DualSense %s audio (controller %d, %u Hz): %s%s%s",
 	                         stream->speaker ? "speaker" : "vibration", stream->controller,
 	                         stream->freq, text, detail != nullptr ? ": " : "",
 	                         detail != nullptr ? detail : "");
+}
+
+// KYTY_DUALSENSE_HAPTICS=rumble: explicit fallback for USB endpoints that accept PCM without
+// moving the actuators (pads that report PS5 type but lack real haptics). Port of mauroalvare
+// 81b3f7ae adapted to this Queue(). Vibration routing only; gyro, triggers and input retain
+// the ordinary path. Default behavior remains native fine haptics.
+static bool ForceRumbleEnvelope() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_DUALSENSE_HAPTICS");
+		return value != nullptr && std::strcmp(value, "rumble") == 0;
+	}();
+	return enabled;
 }
 
 void ApplyRumble(bool force = false) { // Caller holds g_mutex; no calls into Audio or Controller.
@@ -374,8 +400,13 @@ uint64_t Queue(Stream* stream, int controller, const void* data, uint32_t frames
 		return 0;
 	}
 
-	if (!stream->speaker &&
-	    SDL_GetGamepadTypeForID(static_cast<SDL_JoystickID>(controller)) != SDL_GAMEPAD_TYPE_PS5) {
+	if (!stream->speaker && (ForceRumbleEnvelope() ||
+	                         SDL_GetGamepadTypeForID(static_cast<SDL_JoystickID>(controller)) !=
+	                             SDL_GAMEPAD_TYPE_PS5)) {
+		if (ForceRumbleEnvelope()) {
+			stream->controller = controller;
+			ReportRoute(stream, Route::Rumble, nullptr);
+		}
 		CloseDevice(stream);
 		stream->next_check = 0;
 		float peak[2]      = {0.0f, 0.0f};
