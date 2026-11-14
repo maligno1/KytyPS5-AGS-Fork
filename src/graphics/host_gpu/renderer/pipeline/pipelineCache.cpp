@@ -354,6 +354,9 @@ struct CompileTotals {
 	std::atomic<uint64_t> disk_verify_mismatches {0};
 	// Permutations published by the shader precompile replay (KYTY_SHADER_PRECOMPILE).
 	std::atomic<uint64_t> replayed {0};
+	// Replayed specializations that do not fit this build's translation (recorded by another
+	// build whose image plan for the same code differs): skipped, never applied.
+	std::atomic<uint64_t> replay_spec_skips {0};
 	// How pipelines were made, for the KYTY_PIPELINE_STATS line (pipelineStats.h).
 	std::atomic<uint64_t> gfx_hit {0}, gfx_fast {0}, gfx_full {0}, gfx_other {0}, gfx_cp_ns {0};
 	std::atomic<uint64_t> cs_hit {0}, cs_fast {0}, cs_full {0}, cs_cp_ns {0}, cs_prewarmed {0};
@@ -2711,6 +2714,30 @@ struct PipelineCache::ProgramCache {
 		                 ProgramStageName(options.stage), options.shader_hash);
 	}
 
+	// A replayed specialization (a shader journal's entry, or a pipeline list's) was materialized
+	// by the run that recorded it — possibly another build whose translation of the same code has
+	// a different image plan (the journal's header identity covers the device and the input
+	// layouts, not programs.bin's codegen fingerprint). Applying one whose expanded images root
+	// outside this translation's base images, or whose counts disagree with the program, would
+	// fatal in ApplyResourceSpecialization. The replay treats a skipped entry as wasted work,
+	// never a different pipeline.
+	static bool ReplaySpecializationFits(const ShaderRecompiler::IR::ResourceSpecialization& spec,
+	                                     const ShaderRecompiler::TranslateResult& translated) {
+		const auto& info = translated.program.info;
+		if (spec.buffers.size() != info.buffers.size() || info.images.size() > spec.images.size()) {
+			return false;
+		}
+		for (size_t index = 0; index < spec.images.size(); ++index) {
+			const auto root = spec.images[index].indirect_root;
+			if (root == ShaderRecompiler::IR::ImageResource::NoIndirectImage) continue;
+			// Expanded entries (past the base images) must root at a base image; every root must
+			// stay inside the expanded list (the invariants ApplyResourceSpecialization asserts).
+			if (index >= info.images.size() && root >= info.images.size()) return false;
+			if (root >= spec.images.size()) return false;
+		}
+		return true;
+	}
+
 	// KYTY_TRANSLATION_CACHE_VERIFY: compiles the permutation from a copy of `kept` and from a
 	// fresh translation and compares the outputs that reach the GPU and the renderer.
 	bool VerifyKeptTranslation(const ShaderParams&                                 params,
@@ -3163,6 +3190,21 @@ struct PipelineCache::ProgramCache {
 			FinishInFlight(record);
 			return nullptr;
 		};
+		// A replayed specialization that cannot fit this build's translation (recorded by another
+		// build, see ReplaySpecializationFits): skip the permutation here instead of letting
+		// ApplyResourceSpecialization fatal; the game compiles it live when it needs it.
+		const auto skip_bad_replay_spec = [&] {
+			g_compile_totals.replay_spec_skips.fetch_add(1, std::memory_order_relaxed);
+			static std::atomic<uint32_t> logged {0};
+			if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
+				PipelineCacheLog("Shader journal: the stored specialization of {} 0x{:016x} does "
+				                 "not fit this build's translation of the shader; the replay "
+				                 "skips it (it compiles live when the game needs it)",
+				                 ProgramStageName(options.stage), options.shader_hash);
+			}
+			FinishInFlight(record);
+			return nullptr;
+		};
 
 		// The permutation: stored, or emitted from a translation.
 		std::optional<Permutation>                         compiled;
@@ -3189,6 +3231,9 @@ struct PipelineCache::ProgramCache {
 				obtain_translation();
 				if (translated.skip_dispatch) {
 					return skip_after_all();
+				}
+				if (replay && !ReplaySpecializationFits(prep.specialization, translated)) {
+					return skip_bad_replay_spec();
 				}
 				auto fresh =
 				    EmitPermutation(params, options, std::move(translated), prep.specialization,
@@ -3234,6 +3279,9 @@ struct PipelineCache::ProgramCache {
 			}
 			if (translated.skip_dispatch) {
 				return skip_after_all();
+			}
+			if (replay && !ReplaySpecializationFits(prep.specialization, translated)) {
+				return skip_bad_replay_spec();
 			}
 			auto emitted =
 			    EmitPermutation(params, options, std::move(translated), prep.specialization,
@@ -6081,11 +6129,12 @@ void PipelineCache::RunListPrepare() {
 	const auto& t = g_compile_totals;
 	PipelineCacheLog(
 	    "Prepare shaders: done in {:.1f} s (shaders {:.1f} s, pipelines and saving {:.1f} s): {} "
-	    "permutations replayed, {} graphics pipelines built, {} compute pipelines prewarmed; "
-	    "driver cache {} bytes; {} unavailable recipes",
+	    "permutations replayed ({} skipped as another build's), {} graphics pipelines built, {} "
+	    "compute pipelines prewarmed; driver cache {} bytes; {} unavailable recipes",
 	    static_cast<double>(CompileClockNs() - begin) / 1e9, static_cast<double>(shaders_ns) / 1e9,
 	    static_cast<double>(CompileClockNs() - begin - shaders_ns) / 1e9, t.replayed.load(),
-	    t.journal_built.load(), t.prewarm_built.load(), size, failures);
+	    t.replay_spec_skips.load(), t.journal_built.load(), t.prewarm_built.load(), size,
+	    failures);
 	progress(failures == 0 ? "complete" : "failed", shader_total + pipeline_total,
 	         shader_total + pipeline_total, failures);
 	std::fflush(nullptr);
