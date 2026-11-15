@@ -2057,9 +2057,10 @@ KYTY_CP_OP_PARSER(CpOpIndirectCxRegs) {
 		// registers keep their previous values until the next non-null SetAddress.
 		static std::atomic<uint32_t> log_count {0};
 		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
-			LOGF("\t BUG-016: skipping indirect CX register load (null base, num_regs = %" PRIu32
+			std::printf("\t BUG-016: skipping indirect CX register load (null base, num_regs = %" PRIu32
 			     ")\n",
 			     indirect_num_dw);
+			std::fflush(stdout);
 		}
 		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
@@ -2135,9 +2136,10 @@ KYTY_CP_OP_PARSER(CpOpIndirectShRegs) {
 		// BUG-016: skip the load like the num_dw == 0 case (the game clears the patch with null).
 		static std::atomic<uint32_t> log_count {0};
 		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
-			LOGF("\t BUG-016: skipping indirect SH register load (null base, num_regs = %" PRIu32
+			std::printf("\t BUG-016: skipping indirect SH register load (null base, num_regs = %" PRIu32
 			     ")\n",
 			     indirect_num_dw);
+			std::fflush(stdout);
 		}
 		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
@@ -2206,9 +2208,10 @@ KYTY_CP_OP_PARSER(CpOpIndirectUcRegs) {
 		// BUG-016: skip the load like the num_dw == 0 case (the game clears the patch with null).
 		static std::atomic<uint32_t> log_count {0};
 		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
-			LOGF("\t BUG-016: skipping indirect UC register load (null base, num_regs = %" PRIu32
+			std::printf("\t BUG-016: skipping indirect UC register load (null base, num_regs = %" PRIu32
 			     ")\n",
 			     indirect_num_dw);
+			std::fflush(stdout);
 		}
 		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}

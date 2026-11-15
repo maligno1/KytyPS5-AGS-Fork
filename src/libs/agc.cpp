@@ -517,6 +517,36 @@ struct CommandBuffer {
 	}
 };
 
+// BUG-017: Astro Bot's grass scenes exhaust a guest command buffer transiently (cursor_up
+// reaches cursor_down before the game reclaims space); the fatal "Not implemented
+// (cmd == nullptr)" in AgcDcbDrawIndexOffset ended a 27-minute grass session at
+// agc.cpp:2910. Dying there is worse than losing a few packets: draw/state packets are
+// safe to discard (a frame or two with missing draws), while control packets (events,
+// flips, parser stalls) keep their fatal. The sink hands the caller scratch memory so
+// the game keeps running; the packet it writes there is never submitted.
+constexpr uint32_t DcbSinkCapacityDW = 1024u;
+static uint32_t g_dcb_sink_dw[DcbSinkCapacityDW];
+
+static uint32_t* AgcDcbAllocateSink(uint32_t size_dw, const CommandBuffer* buf, const char* who) {
+	if (size_dw > DcbSinkCapacityDW) {
+		EXIT_NOT_IMPLEMENTED(size_dw > DcbSinkCapacityDW);
+	}
+	static std::atomic<uint64_t> sink_hits {0};
+	const auto n = sink_hits.fetch_add(1, std::memory_order_relaxed) + 1;
+	if (n <= 8 || (n & 0xffffu) == 0) {
+		std::printf("BUG-017: %s: guest command buffer exhausted (AllocateDW %" PRIu32 " dw), packet"
+		            " discarded — bottom=0x%016" PRIx64 " top=0x%016" PRIx64 " cursor_up=0x%016" PRIx64
+		            " cursor_down=0x%016" PRIx64 " callback=0x%016" PRIx64 " user_data=0x%016" PRIx64
+		            " reserved_dw=%" PRIu32 " (hit %" PRIu64 ")\n",
+		            who, size_dw, reinterpret_cast<uint64_t>(buf->bottom),
+		            reinterpret_cast<uint64_t>(buf->top), reinterpret_cast<uint64_t>(buf->cursor_up),
+		            reinterpret_cast<uint64_t>(buf->cursor_down), reinterpret_cast<uint64_t>(buf->callback),
+		            reinterpret_cast<uint64_t>(buf->user_data), buf->reserved_dw, n);
+		std::fflush(stdout);
+	}
+	return g_dcb_sink_dw;
+}
+
 struct Label {
 	volatile uint64_t m_value;
 	uint64_t          m_reserved[3];
@@ -1110,11 +1140,12 @@ int KYTY_SYSV_ABI AgcSetCxRegIndirectPatchSetAddress(uint32_t*                  
 	if (regs == nullptr) {
 		static std::atomic<uint32_t> log_count {0};
 		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
-			LOGF("\t BUG-016: SetCxRegIndirectPatchSetAddress(cmd = 0x%016" PRIx64
+			std::printf("\t BUG-016: SetCxRegIndirectPatchSetAddress(cmd = 0x%016" PRIx64
 			     ", regs = nullptr) accepted as a null patch base (packet num_regs = %" PRIu32
 			     ")\n",
 			     reinterpret_cast<uint64_t>(cmd),
 			     is_native_reg_indirect_packet(cmd, RegIndirectPacket::Cx) ? (cmd[4] & 0x3fffu) : 0u);
+			std::fflush(stdout);
 		}
 	}
 
@@ -1137,11 +1168,12 @@ int KYTY_SYSV_ABI AgcSetShRegIndirectPatchSetAddress(uint32_t*                  
 	if (regs == nullptr) {
 		static std::atomic<uint32_t> log_count {0};
 		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
-			LOGF("\t BUG-016: SetShRegIndirectPatchSetAddress(cmd = 0x%016" PRIx64
+			std::printf("\t BUG-016: SetShRegIndirectPatchSetAddress(cmd = 0x%016" PRIx64
 			     ", regs = nullptr) accepted as a null patch base (packet num_regs = %" PRIu32
 			     ")\n",
 			     reinterpret_cast<uint64_t>(cmd),
 			     is_native_reg_indirect_packet(cmd, RegIndirectPacket::Sh) ? (cmd[4] & 0x3fffu) : 0u);
+			std::fflush(stdout);
 		}
 	}
 
@@ -1164,11 +1196,12 @@ int KYTY_SYSV_ABI AgcSetUcRegIndirectPatchSetAddress(uint32_t*                  
 	if (regs == nullptr) {
 		static std::atomic<uint32_t> log_count {0};
 		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
-			LOGF("\t BUG-016: SetUcRegIndirectPatchSetAddress(cmd = 0x%016" PRIx64
+			std::printf("\t BUG-016: SetUcRegIndirectPatchSetAddress(cmd = 0x%016" PRIx64
 			     ", regs = nullptr) accepted as a null patch base (packet num_regs = %" PRIu32
 			     ")\n",
 			     reinterpret_cast<uint64_t>(cmd),
 			     is_native_reg_indirect_packet(cmd, RegIndirectPacket::Uc) ? (cmd[4] & 0x3fffu) : 0u);
+			std::fflush(stdout);
 		}
 	}
 
@@ -2529,7 +2562,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbSetCxRegistersIndirect(CommandBuffer*             
 
 	auto* cmd = buf->AllocateDW(5);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		// BUG-017: survivable exhaustion — hand back scratch memory instead of dying; the
+		// discarded draw/state packet is never submitted (missing draws for a frame or two).
+		cmd = AgcDcbAllocateSink(5, buf, "AgcDcbSetCxRegistersIndirect");
+	}
 
 	auto vaddr = reinterpret_cast<uint64_t>(regs);
 
@@ -2553,7 +2590,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbSetShRegistersIndirect(CommandBuffer*             
 
 	auto* cmd = buf->AllocateDW(5);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		// BUG-017: survivable exhaustion — hand back scratch memory instead of dying; the
+		// discarded draw/state packet is never submitted (missing draws for a frame or two).
+		cmd = AgcDcbAllocateSink(5, buf, "AgcDcbSetShRegistersIndirect");
+	}
 
 	auto vaddr = reinterpret_cast<uint64_t>(regs);
 
@@ -2583,7 +2624,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbSetUcRegistersIndirect(CommandBuffer*             
 
 	auto* cmd = buf->AllocateDW(5);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		// BUG-017: survivable exhaustion — hand back scratch memory instead of dying; the
+		// discarded draw/state packet is never submitted (missing draws for a frame or two).
+		cmd = AgcDcbAllocateSink(5, buf, "AgcDcbSetUcRegistersIndirect");
+	}
 
 	auto vaddr = reinterpret_cast<uint64_t>(regs);
 
@@ -2605,7 +2650,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbSetIndexSize(CommandBuffer* buf, uint8_t index_siz
 
 	auto* cmd = buf->AllocateDW(3);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		// BUG-017: survivable exhaustion — hand back scratch memory instead of dying; the
+		// discarded draw/state packet is never submitted (missing draws for a frame or two).
+		cmd = AgcDcbAllocateSink(3, buf, "AgcDcbSetIndexSize");
+	}
 
 	cmd[0] = KYTY_PM4(3, Pm4::IT_SET_UCONFIG_REG_INDEX, 0u);
 	cmd[1] = 0x20000000u | Pm4::VGT_INDEX_TYPE;
@@ -2626,7 +2675,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbSetIndexBuffer(CommandBuffer* buf, uint64_t index_
 
 	auto* cmd = buf->AllocateDW(3);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		// BUG-017: survivable exhaustion — hand back scratch memory instead of dying; the
+		// discarded draw/state packet is never submitted (missing draws for a frame or two).
+		cmd = AgcDcbAllocateSink(3, buf, "AgcDcbSetIndexBuffer");
+	}
 
 	cmd[0] = KYTY_PM4(3, Pm4::IT_INDEX_BASE, 0u);
 	cmd[1] = static_cast<uint32_t>(index_addr & 0xffffffffu);
@@ -2646,7 +2699,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbSetIndexCount(CommandBuffer* buf, uint32_t index_c
 
 	auto* cmd = buf->AllocateDW(2);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		// BUG-017: survivable exhaustion — hand back scratch memory instead of dying; the
+		// discarded draw/state packet is never submitted (missing draws for a frame or two).
+		cmd = AgcDcbAllocateSink(2, buf, "AgcDcbSetIndexCount");
+	}
 
 	cmd[0] = KYTY_PM4(2, Pm4::IT_INDEX_BUFFER_SIZE, 0u);
 	cmd[1] = index_count;
@@ -2765,7 +2822,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbDrawIndex(CommandBuffer* buf, uint32_t index_count
 
 	auto* cmd = buf->AllocateDW(6);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		// BUG-017: survivable exhaustion — hand back scratch memory instead of dying; the
+		// discarded draw/state packet is never submitted (missing draws for a frame or two).
+		cmd = AgcDcbAllocateSink(6, buf, "AgcDcbDrawIndex");
+	}
 
 	auto vaddr = reinterpret_cast<uint64_t>(index_addr);
 
@@ -2808,7 +2869,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbDrawIndexMultiInstanced(CommandBuffer* buf, uint32
 
 	auto* cmd = buf->AllocateDW(9);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		// BUG-017: survivable exhaustion — hand back scratch memory instead of dying; the
+		// discarded draw/state packet is never submitted (missing draws for a frame or two).
+		cmd = AgcDcbAllocateSink(9, buf, "AgcDcbDrawIndexMultiInstanced");
+	}
 
 	auto index_vaddr  = reinterpret_cast<uint64_t>(index_addr);
 	auto object_vaddr = reinterpret_cast<uint64_t>(object_ids);
@@ -2877,7 +2942,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbDrawIndexAuto(CommandBuffer* buf, uint32_t index_c
 
 	auto* cmd = buf->AllocateDW(3);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		// BUG-017: survivable exhaustion — hand back scratch memory instead of dying; the
+		// discarded draw/state packet is never submitted (missing draws for a frame or two).
+		cmd = AgcDcbAllocateSink(3, buf, "AgcDcbDrawIndexAuto");
+	}
 
 	cmd[0] = KYTY_PM4(3, Pm4::IT_DRAW_INDEX_AUTO, 0u);
 	cmd[1] = index_count;
@@ -2907,7 +2976,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbDrawIndexOffset(CommandBuffer* buf, uint32_t index
 
 	auto* cmd = buf->AllocateDW(5);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		// BUG-017: survivable exhaustion — hand back scratch memory instead of dying; the
+		// discarded draw/state packet is never submitted (missing draws for a frame or two).
+		cmd = AgcDcbAllocateSink(5, buf, "AgcDcbDrawIndexOffset");
+	}
 
 	cmd[0] = KYTY_PM4(5, Pm4::IT_DRAW_INDEX_OFFSET_2, 0u);
 	cmd[1] = (index_count == 0 ? 1u : index_count);
@@ -2938,7 +3011,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbSetBaseIndirectArgs(CommandBuffer* buf, uint32_t s
 
 	auto* cmd = buf->AllocateDW(4);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		// BUG-017: survivable exhaustion — hand back scratch memory instead of dying; the
+		// discarded draw/state packet is never submitted (missing draws for a frame or two).
+		cmd = AgcDcbAllocateSink(4, buf, "AgcDcbSetBaseIndirectArgs");
+	}
 
 	const auto addr = reinterpret_cast<uint64_t>(indirect_base_addr);
 
@@ -2964,7 +3041,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbDrawIndexIndirect(CommandBuffer* buf, uint32_t dat
 
 	auto* cmd = buf->AllocateDW(5);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		// BUG-017: survivable exhaustion — hand back scratch memory instead of dying; the
+		// discarded draw/state packet is never submitted (missing draws for a frame or two).
+		cmd = AgcDcbAllocateSink(5, buf, "AgcDcbDrawIndexIndirect");
+	}
 
 	// Single indexed draws store the index-offset enable in word 3, bit 28.
 	const auto patch_offsets =
@@ -2993,7 +3074,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbDrawIndirect(CommandBuffer* buf, uint32_t data_off
 
 	auto* cmd = buf->AllocateDW(5);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		// BUG-017: survivable exhaustion — hand back scratch memory instead of dying; the
+		// discarded draw/state packet is never submitted (missing draws for a frame or two).
+		cmd = AgcDcbAllocateSink(5, buf, "AgcDcbDrawIndirect");
+	}
 
 	const auto patch_offsets = decode_indirect_modifier_patch_offsets(modifier, false);
 
@@ -3091,7 +3176,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbDrawIndexIndirectMulti(CommandBuffer*       buf,
 
 	auto* cmd = buf->AllocateDW(10);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		// BUG-017: survivable exhaustion — hand back scratch memory instead of dying; the
+		// discarded draw/state packet is never submitted (missing draws for a frame or two).
+		cmd = AgcDcbAllocateSink(10, buf, "AgcDcbDrawIndexIndirectMulti");
+	}
 
 	const auto low           = static_cast<uint32_t>(modifier);
 	const auto sgpr_base     = indirect_modifier_sgpr_base(low);
@@ -3140,7 +3229,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbDispatchIndirect(CommandBuffer* buf, uint32_t data
 
 	auto* cmd = buf->AllocateDW(3);
 
-	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
+	if (cmd == nullptr) {
+		// BUG-017: survivable exhaustion — hand back scratch memory instead of dying; the
+		// discarded draw/state packet is never submitted (missing draws for a frame or two).
+		cmd = AgcDcbAllocateSink(3, buf, "AgcDcbDispatchIndirect");
+	}
 
 	cmd[0] = KYTY_PM4(3, Pm4::IT_DISPATCH_INDIRECT, 0u);
 	cmd[1] = data_offset_in_bytes;
