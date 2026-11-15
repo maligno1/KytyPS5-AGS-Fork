@@ -2052,7 +2052,16 @@ KYTY_CP_OP_PARSER(CpOpIndirectCxRegs) {
 		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 	if (indirect_buffer == nullptr) {
-		EXIT("indirect CX registers have null address, num_regs = %" PRIu32 "\n", indirect_num_dw);
+		// BUG-016: the game clears the register patch with a null base (vegetation bend reset).
+		// Skip the load like the num_dw == 0 case instead of killing the emulator; the patched
+		// registers keep their previous values until the next non-null SetAddress.
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF("\t BUG-016: skipping indirect CX register load (null base, num_regs = %" PRIu32
+			     ")\n",
+			     indirect_num_dw);
+		}
+		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 	indirect_buffer = ReadIndirectRegisterPairs(cp, indirect_buffer, indirect_num_dw);
 	for (uint32_t i = 0; i < indirect_num_dw; i++, indirect_buffer += 2) {
@@ -2123,7 +2132,14 @@ KYTY_CP_OP_PARSER(CpOpIndirectShRegs) {
 		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 	if (indirect_buffer == nullptr) {
-		EXIT("indirect SH registers have null address, num_regs = %" PRIu32 "\n", indirect_num_dw);
+		// BUG-016: skip the load like the num_dw == 0 case (the game clears the patch with null).
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF("\t BUG-016: skipping indirect SH register load (null base, num_regs = %" PRIu32
+			     ")\n",
+			     indirect_num_dw);
+		}
+		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 	const auto indirect_address = reinterpret_cast<uint64_t>(indirect_buffer);
 	indirect_buffer             = ReadIndirectRegisterPairs(cp, indirect_buffer, indirect_num_dw);
@@ -2187,7 +2203,14 @@ KYTY_CP_OP_PARSER(CpOpIndirectUcRegs) {
 		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 	if (indirect_buffer == nullptr) {
-		EXIT("indirect UC registers have null address, num_regs = %" PRIu32 "\n", indirect_num_dw);
+		// BUG-016: skip the load like the num_dw == 0 case (the game clears the patch with null).
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF("\t BUG-016: skipping indirect UC register load (null base, num_regs = %" PRIu32
+			     ")\n",
+			     indirect_num_dw);
+		}
+		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 	indirect_buffer = ReadIndirectRegisterPairs(cp, indirect_buffer, indirect_num_dw);
 	for (uint32_t i = 0; i < indirect_num_dw; i++, indirect_buffer += 2) {

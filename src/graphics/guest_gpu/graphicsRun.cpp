@@ -2224,7 +2224,8 @@ bool CommandProcessor::ProcessPacket(Pm4Execution& execution) {
 					    DrawPrep::RegisterIndirectWindowEnabled() &&
 					    DrawPrep::RegisterIndirectPairs(header, packet + 1, remaining_dw, pairs) &&
 					    (pairs.size == 0 ||
-					     LibKernel::Memory::IsGpuCleanForRead(pairs.address, pairs.size))) {
+					     (pairs.address != 0 &&
+					      LibKernel::Memory::IsGpuCleanForRead(pairs.address, pairs.size)))) {
 						packet_class = DrawPrep::PacketClass::WindowSafe;
 						Profiler::CountFrameEvent(Profiler::FrameEvent::DrawPrepRegIndirectKept);
 						DrawPrep::GetTotals().register_indirect_kept.fetch_add(

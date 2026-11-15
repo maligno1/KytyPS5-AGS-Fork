@@ -1100,7 +1100,23 @@ int KYTY_SYSV_ABI AgcSetCxRegIndirectPatchSetAddress(uint32_t*                  
 	         reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(regs));
 
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
-	EXIT_NOT_IMPLEMENTED(regs == nullptr);
+
+	// BUG-016: Astro Bot clears the vegetation register patch passing regs == nullptr (its
+	// grass bend system resets it; the fatal "Not implemented (regs == nullptr)" here ended
+	// 2/2 grass play sessions at agc.cpp:1103). Hardware takes a null patch base as "no patch
+	// data": the packet keeps a well-formed zero base and the CP-side load skips it
+	// (CpOpIndirectCxRegs). The packet's current count is logged so a null base with a
+	// non-zero count stays visible.
+	if (regs == nullptr) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF("\t BUG-016: SetCxRegIndirectPatchSetAddress(cmd = 0x%016" PRIx64
+			     ", regs = nullptr) accepted as a null patch base (packet num_regs = %" PRIu32
+			     ")\n",
+			     reinterpret_cast<uint64_t>(cmd),
+			     is_native_reg_indirect_packet(cmd, RegIndirectPacket::Cx) ? (cmd[4] & 0x3fffu) : 0u);
+		}
+	}
 
 	auto vaddr = reinterpret_cast<uint64_t>(regs);
 
@@ -1116,7 +1132,18 @@ int KYTY_SYSV_ABI AgcSetShRegIndirectPatchSetAddress(uint32_t*                  
 	         reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(regs));
 
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
-	EXIT_NOT_IMPLEMENTED(regs == nullptr);
+
+	// BUG-016: same null patch base as SetCxRegIndirectPatchSetAddress above.
+	if (regs == nullptr) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF("\t BUG-016: SetShRegIndirectPatchSetAddress(cmd = 0x%016" PRIx64
+			     ", regs = nullptr) accepted as a null patch base (packet num_regs = %" PRIu32
+			     ")\n",
+			     reinterpret_cast<uint64_t>(cmd),
+			     is_native_reg_indirect_packet(cmd, RegIndirectPacket::Sh) ? (cmd[4] & 0x3fffu) : 0u);
+		}
+	}
 
 	auto vaddr = reinterpret_cast<uint64_t>(regs);
 
@@ -1132,7 +1159,18 @@ int KYTY_SYSV_ABI AgcSetUcRegIndirectPatchSetAddress(uint32_t*                  
 	         reinterpret_cast<uint64_t>(cmd), reinterpret_cast<uint64_t>(regs));
 
 	EXIT_NOT_IMPLEMENTED(cmd == nullptr);
-	EXIT_NOT_IMPLEMENTED(regs == nullptr);
+
+	// BUG-016: same null patch base as SetCxRegIndirectPatchSetAddress above.
+	if (regs == nullptr) {
+		static std::atomic<uint32_t> log_count {0};
+		if (log_count.fetch_add(1, std::memory_order_relaxed) < 16) {
+			LOGF("\t BUG-016: SetUcRegIndirectPatchSetAddress(cmd = 0x%016" PRIx64
+			     ", regs = nullptr) accepted as a null patch base (packet num_regs = %" PRIu32
+			     ")\n",
+			     reinterpret_cast<uint64_t>(cmd),
+			     is_native_reg_indirect_packet(cmd, RegIndirectPacket::Uc) ? (cmd[4] & 0x3fffu) : 0u);
+		}
+	}
 
 	auto vaddr = reinterpret_cast<uint64_t>(regs);
 
